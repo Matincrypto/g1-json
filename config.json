@@ -1,0 +1,28 @@
+{
+  "wallex_api": {
+    "api_key": "16058|Mc3EkrDcOkDftfMqWQ7S74epmXfvtsAD0yx2T9XR"
+  },
+  "settings": {
+    "price_difference_threshold": 3.0,
+    "min_global_volume_usd": 10000000,
+    "max_allowed_percentage_difference": 100.0,
+    "check_interval_seconds": 30,
+    "deduplication_window_minutes": 30,
+    "trade_amount_usdt": 12.0
+  },
+  "price_sources": {
+    "wallex": {
+      "base_url": "https://api.wallex.ir/v1/",
+      "websocket_url": "wss://api.wallex.ir/ws",
+      "markets_endpoint": "markets"
+    },
+    "bybit": {
+      "base_url": "https://api.bybit.com",
+      "tickers_endpoint": "/v5/market/tickers?category=spot"
+    },
+    "coincatch": {
+      "base_url": "https://api.coincatch.com",
+      "tickers_endpoint": "/api/spot/v1/market/tickers"
+    }
+  }
+}
