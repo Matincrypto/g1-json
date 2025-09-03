@@ -279,14 +279,14 @@ async def main():
 
     # Web Server Setup
     app = web.Application()
-    app.router.add_get('/signals', get_signals)
+    app.router.add_get('/g1/signals', get_signals) 
     runner = web.AppRunner(app)
     await runner.setup()
     # ------------------   تغییر پورت در خط زیر   ------------------
     site = web.TCPSite(runner, '0.0.0.0', 8888)
     # -----------------------------------------------------------
     await site.start()
-    logger.info("Web server started on http://0.0.0.0:8888/signals")
+    logger.info("Web server started on http://0.0.0.0:8888/g1/signals")
 
     try:
         # Keep the main function alive to serve requests
