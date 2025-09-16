@@ -13,9 +13,9 @@
       "websocket_url": "wss://api.wallex.ir/ws",
       "markets_endpoint": "markets"
     },
-    "coincatch": {
-      "base_url": "https://api.coincatch.com",
-      "ticker_endpoint": "/api/spot/v1/market/ticker"
+    "binance": {
+      "base_url": "https://api.binance.com",
+      "ticker_endpoint": "/api/v3/ticker/price"
     }
   }
 }

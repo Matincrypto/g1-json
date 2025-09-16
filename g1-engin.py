@@ -11,6 +11,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from aiohttp import web
 import sys
+import aiohttp
+
+#نسخه: 1.2 (به‌روز شده برای Binance)
+#تاریخ: 16 سپتامبر 2025
+
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -39,7 +44,7 @@ async def run_network_diagnostics(config):
     """Tests connectivity to required API endpoints before starting."""
     logger.info("--- Running Network Diagnostics ---")
     wallex_ok = False
-    coincatch_ok = False
+    binance_ok = False
     timeout = 30
 
     # Test Wallex HTTP API
@@ -54,23 +59,24 @@ async def run_network_diagnostics(config):
     except Exception as e:
         logger.error(f"❌ FAILED: Could not connect to Wallex HTTP API. Error: {e}")
 
-    # Test CoinCatch HTTP API
+    # Test Binance HTTP API
     try:
-        url = config['price_sources']['coincatch']['base_url'] + config['price_sources']['coincatch']['ticker_endpoint']
-        params = {'symbol': 'BTCUSDT_SPBL'} # Use a sample symbol for testing
-        logger.info(f"--> Testing connection to CoinCatch HTTP API at: {url}")
+        url = config['price_sources']['binance']['base_url'] + config['price_sources']['binance']['ticker_endpoint']
+        params = {'symbol': 'BTCUSDT'} # Use a sample symbol for testing
+        logger.info(f"--> Testing connection to Binance HTTP API at: {url}")
         response = await asyncio.to_thread(requests.get, url, params=params, timeout=timeout)
         response.raise_for_status()
-        if response.json().get("code") == "00000":
-            logger.info("✅ SUCCESS: CoinCatch HTTP API connection is OK.")
-            coincatch_ok = True
+        # A successful response for a single symbol is a JSON object with 'symbol' and 'price'
+        if "price" in response.json():
+            logger.info("✅ SUCCESS: Binance HTTP API connection is OK.")
+            binance_ok = True
         else:
-            logger.error(f"❌ FAILED: CoinCatch API connected, but returned an error: {response.json().get('msg')}")
+            logger.error(f"❌ FAILED: Binance API connected, but returned an unexpected response: {response.text}")
     except Exception as e:
-        logger.error(f"❌ FAILED: Could not connect to CoinCatch HTTP API. Error: {e}")
+        logger.error(f"❌ FAILED: Could not connect to Binance HTTP API. Error: {e}")
     
     logger.info("--- Network Diagnostics Complete ---")
-    return wallex_ok and coincatch_ok
+    return wallex_ok and binance_ok
 
 # --- Signal Management ---
 def generate_complex_signal_id():
@@ -205,40 +211,54 @@ def get_wallex_usdt_markets(config):
         logger.error(f"An error occurred while fetching Wallex markets: {e}")
         return []
 
-def get_coincatch_prices(config, markets):
-    """Fetches latest prices from CoinCatch for a list of markets, one by one."""
-    if not markets: return {}
-    timeout = 30
-    all_prices = {}
-    base_url = config['price_sources']['coincatch']['base_url']
-    endpoint = config['price_sources']['coincatch']['ticker_endpoint']
-    url = base_url + endpoint
-    
-    logger.info(f"Requesting prices for {len(markets)} markets from CoinCatch (one by one)...")
-    
-    for i, symbol in enumerate(markets):
-        try:
-            coincatch_symbol = f"{symbol}_SPBL"
-            params = {'symbol': coincatch_symbol}
-            
-            r = requests.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            response_data = r.json()
-
-            if response_data.get("code") == "00000" and response_data.get("data"):
-                all_prices[symbol] = float(response_data['data']['close'])
+async def fetch_binance_price_for_symbol(session, url, symbol):
+    """یک تابع کمکی برای دریافت قیمت یک ارز از Binance به صورت غیرهمزمان."""
+    params = {'symbol': symbol}
+    try:
+        async with session.get(url, params=params, timeout=10) as response:
+            response.raise_for_status()
+            response_data = await response.json()
+            if 'price' in response_data:
+                return symbol, float(response_data['price'])
             else:
-                if i % 20 == 0:
-                     logger.debug(f"Could not fetch price for {coincatch_symbol}: {response_data.get('msg')}")
+                return symbol, None
+    except Exception:
+        return symbol, None
 
-            time.sleep(0.05) 
+async def get_binance_prices(config, markets):
+    """
+    (نسخه جدید برای Binance)
+    با استفاده از درخواست‌های همزمان، آخرین قیمت‌ها را از Binance دریافت می‌کند.
+    """
+    if not markets:
+        return {}
 
-        except Exception as e:
-            if i % 20 == 0:
-                logger.debug(f"An error occurred while fetching CoinCatch price for {coincatch_symbol}: {e}")
-            
-    logger.info(f"Successfully fetched {len(all_prices)} prices from CoinCatch.")
+    all_prices = {}
+    base_url = config['price_sources']['binance']['base_url']
+    endpoint = config['price_sources']['binance']['ticker_endpoint']
+    url = base_url + endpoint
+
+    logger.info(f"Requesting prices for {len(markets)} markets from Binance (concurrently)...")
+    
+    tasks = []
+    async with aiohttp.ClientSession() as session:
+        for symbol in markets:
+            tasks.append(fetch_binance_price_for_symbol(session, url, symbol))
+        
+        results = await asyncio.gather(*tasks)
+
+    processed_count = 0
+    for symbol, price in results:
+        if price is not None:
+            all_prices[symbol] = price
+            processed_count += 1
+        else:
+            if (len(results) - processed_count) % 20 == 0:
+                 logger.debug(f"Could not fetch price for {symbol} from Binance.")
+
+    logger.info(f"Successfully fetched {len(all_prices)} prices from Binance.")
     return all_prices
+
 
 # --- Main Analysis Logic ---
 async def analysis_loop(config, ws_manager, wallex_markets):
@@ -251,13 +271,13 @@ async def analysis_loop(config, ws_manager, wallex_markets):
             logger.info("==================================================================")
             current_cycle_signals = []
             
-            global_prices = get_coincatch_prices(config, wallex_markets)
+            global_prices = await get_binance_prices(config, wallex_markets)
             if not global_prices:
-                logger.warning("Could not fetch any global prices from CoinCatch. Skipping this cycle.")
+                logger.warning("Could not fetch any global prices from Binance. Skipping this cycle.")
                 await asyncio.sleep(config['settings']['check_interval_seconds'])
                 continue
 
-            dedup_window = config['settings']['deduplication_minutes']
+            dedup_window = config['settings']['deduplication_window_minutes']
             signal_threshold = config['settings']['price_difference_threshold']
             
             logger.info(f"--- Analyzing {len(wallex_markets)} markets ---")
@@ -273,10 +293,10 @@ async def analysis_loop(config, ws_manager, wallex_markets):
                 discount_pct = ((global_price - wallex_avg_ask) / global_price) * 100
                 
                 if abs(discount_pct) >= signal_threshold:
-                    logger.info(f"-> {symbol:<10} | Wallex Avg Ask: {wallex_avg_ask:,.4f} | CoinCatch Price: {global_price:,.4f} | Difference: {discount_pct:+.2f}%")
+                    logger.info(f"-> {symbol:<10} | Wallex Avg Ask: {wallex_avg_ask:,.4f} | Binance Price: {global_price:,.4f} | Difference: {discount_pct:+.2f}%")
                 
                 if discount_pct >= signal_threshold:
-                    logger.warning(f"SIGNAL FOUND! {symbol} on Wallex is {discount_pct:.2f}% cheaper than CoinCatch.")
+                    logger.warning(f"SIGNAL FOUND! {symbol} on Wallex is {discount_pct:.2f}% cheaper than Binance.")
                     action = "BUY_ON_WALLEX"
                     if not check_for_recent_signal(symbol, action, dedup_window):
                         new_signal = add_signal_to_history(symbol, action, wallex_avg_ask, global_price, discount_pct)
@@ -312,18 +332,13 @@ async def main():
 
     ws_manager = WallexWebsocketManager(config['price_sources']['wallex']['websocket_url'])
     
-    # --- CORRECTED LOGIC ORDER ---
-    # 1. Start the WebSocket connection manager in the background.
     ws_task = asyncio.create_task(ws_manager.connect_and_listen())
     
-    # 2. Give it a moment to establish the initial connection.
     logger.info("Waiting for WebSocket to establish initial connection...")
     await asyncio.sleep(5) 
     
-    # 3. Now that the connection is likely established, send the subscription list.
     await ws_manager.subscribe_to_streams(wallex_markets)
     
-    # 4. Start the analysis loop.
     analysis_task = asyncio.create_task(analysis_loop(config, ws_manager, wallex_markets))
 
     app = web.Application()
