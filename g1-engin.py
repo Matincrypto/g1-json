@@ -13,7 +13,7 @@ from aiohttp import web
 import sys
 import aiohttp
 
-#نسخه: 1.2 (به‌روز شده برای Binance)
+#نسخه: 1.4 (به‌روز شده برای فرمت خروجی API)
 #تاریخ: 16 سپتامبر 2025
 
 
@@ -66,7 +66,6 @@ async def run_network_diagnostics(config):
         logger.info(f"--> Testing connection to Binance HTTP API at: {url}")
         response = await asyncio.to_thread(requests.get, url, params=params, timeout=timeout)
         response.raise_for_status()
-        # A successful response for a single symbol is a JSON object with 'symbol' and 'price'
         if "price" in response.json():
             logger.info("✅ SUCCESS: Binance HTTP API connection is OK.")
             binance_ok = True
@@ -91,30 +90,38 @@ def generate_complex_signal_id():
         product_list.insert(insert_position, letter)
     return "".join(product_list)
 
+# --- START OF CHANGE 1 ---
 def add_signal_to_history(symbol, action, entry_price, target_price, percentage_diff):
-    """Adds a signal to the historical list for deduplication."""
-    new_signal_id = generate_complex_signal_id()
+    """Adds a signal to the historical list with the new API format."""
+    # Assuming all symbols are in 'ASSETUSDT' format, e.g., 'BTCUSDT'
+    asset_name = symbol.replace('USDT', '')
+
     signal = {
-        'signal_id': new_signal_id,
-        'symbol': symbol,
-        'action': action,
-        'entry_price': entry_price,
-        'target_price': target_price,
-        'percentage_diff': round(percentage_diff, 2),
-        'timestamp': datetime.now(pytz.utc).isoformat()
+      "asset_name": asset_name,
+      "entry_price": entry_price,
+      "exchange_name": "Wallex", # Hardcoded as per request
+      "exit_price": target_price,
+      "expected_profit_percentage": round(percentage_diff, 2),
+      "strategy_name": "G1", # Hardcoded as per request
+      # --- Internal fields for deduplication ---
+      "_internal_timestamp": datetime.now(pytz.utc).isoformat(),
+      "_internal_symbol": symbol,
+      "_internal_action": action
     }
     historical_signals.append(signal)
     if len(historical_signals) > 100:
         historical_signals.pop(0)
-    logger.info(f"Signal for {symbol} added to history (ID: {new_signal_id}).")
+    logger.info(f"Signal for {symbol} added to history.")
     return signal
+# --- END OF CHANGE 1 ---
 
 def check_for_recent_signal(symbol, action, window_minutes):
     """Checks if a similar signal was sent within the defined time window."""
     threshold_time = datetime.now(pytz.utc) - timedelta(minutes=window_minutes)
     for signal in reversed(historical_signals):
-        if signal['symbol'] == symbol and signal['action'] == action:
-            signal_time = datetime.fromisoformat(signal['timestamp'])
+        # Use internal fields for checking duplicates
+        if signal['_internal_symbol'] == symbol and signal['_internal_action'] == action:
+            signal_time = datetime.fromisoformat(signal['_internal_timestamp'])
             if signal_time > threshold_time:
                 return True
     return False
@@ -136,7 +143,6 @@ class WallexWebsocketManager:
                 async with websockets.connect(self.url) as ws:
                     self.connection = ws
                     logger.info("WebSocket: Connection successful.")
-                    # On a fresh connection (or reconnection), resubscribe to all necessary streams.
                     await self.subscribe_to_streams(list(self.order_books.keys()))
                     await self._listen()
             except (websockets.ConnectionClosed, ConnectionRefusedError, asyncio.TimeoutError) as e:
@@ -168,7 +174,6 @@ class WallexWebsocketManager:
 
         logger.info(f"WebSocket: Subscribing to Sell-Depth for {len(symbols)} symbols...")
         for symbol in symbols:
-            # Add symbol to order_books here so it's remembered for reconnection
             if symbol not in self.order_books:
                 self.order_books[symbol] = []
             
@@ -183,14 +188,14 @@ class WallexWebsocketManager:
                 logger.error(f"WebSocket: Failed to send subscription for {symbol}: {e}")
         logger.info("WebSocket: Finished sending all subscription requests.")
 
-    def get_simple_avg_top_3_ask_price(self, symbol):
-        """Calculates the simple average price of the top 3 sell orders."""
+    def get_simple_avg_top_5_ask_price(self, symbol):
+        """Calculates the simple average price of the top 5 sell orders."""
         orders = self.order_books.get(symbol, [])
-        if not orders or len(orders) < 3:
+        if not orders or len(orders) < 5:
             return None
-        top_3_orders = orders[:3]
-        total_price = sum(Decimal(str(order['price'])) for order in top_3_orders)
-        return float(total_price / 3)
+        top_5_orders = orders[:5]
+        total_price = sum(Decimal(str(order['price'])) for order in top_5_orders)
+        return float(total_price / 5)
 
     def stop(self):
         self._is_running = False
@@ -282,7 +287,7 @@ async def analysis_loop(config, ws_manager, wallex_markets):
             
             logger.info(f"--- Analyzing {len(wallex_markets)} markets ---")
             for symbol in wallex_markets:
-                wallex_avg_ask = ws_manager.get_simple_avg_top_3_ask_price(symbol)
+                wallex_avg_ask = ws_manager.get_simple_avg_top_5_ask_price(symbol)
                 if not wallex_avg_ask:
                     continue
 
@@ -314,9 +319,26 @@ async def analysis_loop(config, ws_manager, wallex_markets):
         logger.info("Analysis loop has been cancelled.")
 
 # --- Web Server Handlers ---
+# --- START OF CHANGE 2 ---
 async def get_signals(request):
-    """Handler for the /signals API endpoint."""
-    return web.json_response(latest_cycle_signals)
+    """Handler for the /signals API endpoint with the new format."""
+    
+    # Create a clean list for the output, without internal fields
+    opportunities_to_display = []
+    for signal in latest_cycle_signals:
+        display_signal = signal.copy()
+        # Remove internal fields before showing to the user
+        display_signal.pop("_internal_timestamp", None)
+        display_signal.pop("_internal_symbol", None)
+        display_signal.pop("_internal_action", None)
+        opportunities_to_display.append(display_signal)
+
+    response_data = {
+        "last_updated": datetime.now(pytz.utc).isoformat(),
+        "opportunities": opportunities_to_display
+    }
+    return web.json_response(response_data)
+# --- END OF CHANGE 2 ---
 
 async def main():
     config = load_config()
