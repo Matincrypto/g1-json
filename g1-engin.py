@@ -90,11 +90,12 @@ def generate_complex_signal_id():
         product_list.insert(insert_position, letter)
     return "".join(product_list)
 
-# --- START OF CHANGE 1 ---
+# --- START OF CHANGE 1 (Modified for full symbol name) ---
 def add_signal_to_history(symbol, action, entry_price, target_price, percentage_diff):
     """Adds a signal to the historical list with the new API format."""
-    # Assuming all symbols are in 'ASSETUSDT' format, e.g., 'BTCUSDT'
-    asset_name = symbol.replace('USDT', '')
+    
+    # [!!] این خط تغییر کرده است تا نام کامل جفت ارز (symbol) را ذخیره کند
+    asset_name = symbol 
 
     signal = {
       "asset_name": asset_name,
